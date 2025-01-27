@@ -21,7 +21,7 @@ done
 
 # Move todos os arquivos de foto para o diretório Fotos
 for file in "$folder"/*; do
-    if [[ $file == *.jpg || $file == *.jpeg || $file == *.JPG || $file == *.JPEG || $file == *.HEIC  ]]; then
+    if [[ $file == *.jpg || $file == *.jpeg || $file == *.JPG || $file == *.JPEG || $file == *.HEIC  || $file == *.heic  ]]; then
         mv "$file" "$folder/Fotos/"
     fi
 done

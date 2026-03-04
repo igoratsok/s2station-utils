@@ -1,2 +1,3 @@
 PyQt6
 ffmpeg-python
+ffmpeg

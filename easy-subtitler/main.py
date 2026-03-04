@@ -1,570 +1,528 @@
-import subprocess
-import whisper
 import sys
 import os
 import time
+import subprocess
 import traceback
+import ssl  # <--- IMPORTANTE: Adicionado para corrigir o erro
+import whisper
 
-# Importar componentes Qt necessários
-from PyQt5.QtCore import Qt, QThread, pyqtSignal
-from PyQt5.QtGui import QFont, QIcon, QPalette, QColor
-from PyQt5.QtWidgets import (
-    QApplication, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, QFileDialog, 
-    QWidget, QComboBox, QSpinBox, QSizePolicy, QProgressBar, QGroupBox, 
-    QFrame, QMessageBox
+# --- CORREÇÃO DE SSL PARA MACOS ---
+# Isso permite baixar o modelo sem o erro CERTIFICATE_VERIFY_FAILED
+try:
+    _create_unverified_https_context = ssl._create_unverified_context
+except AttributeError:
+    pass
+else:
+    ssl._create_default_https_context = _create_unverified_https_context
+# ----------------------------------
+
+from PyQt6.QtCore import Qt, QThread, pyqtSignal, QSize, QMimeData
+from PyQt6.QtGui import QFont, QIcon, QPalette, QColor, QAction, QDragEnterEvent, QDropEvent
+from PyQt6.QtWidgets import (
+    QApplication, QMainWindow, QVBoxLayout, QHBoxLayout, QPushButton, QLabel, 
+    QFileDialog, QWidget, QComboBox, QSpinBox, QProgressBar, QFrame, 
+    QMessageBox, QGraphicsDropShadowEffect, QSizePolicy, QScrollArea
 )
 
-# --- Estilos (Dark Mode Moderno) ---
-STYLESHEET = """
+# --- CONFIGURAÇÃO DE ESTILO (CSS MODERN) ---
+MODERN_STYLESHEET = """
+    QMainWindow {
+        background-color: #121212;
+    }
     QWidget {
-        background-color: #1e1e1e;
-        color: #e0e0e0;
-        font-family: 'Segoe UI', 'Roboto', sans-serif;
+        color: #E0E0E0;
+        font-family: 'Segoe UI', 'Inter', sans-serif;
         font-size: 14px;
     }
-    QGroupBox {
-        border: 1px solid #3d3d3d;
+    /* Cards (Container) */
+    QFrame#Card {
+        background-color: #1E1E1E;
+        border-radius: 12px;
+        border: 1px solid #333333;
+    }
+    /* Drop Zone */
+    QFrame#DropZone {
+        background-color: #252526;
+        border: 2px dashed #444444;
+        border-radius: 12px;
+    }
+    QFrame#DropZone:hover {
+        background-color: #2D2D30;
+        border-color: #0078D4;
+        border-style: solid;
+    }
+    /* Labels */
+    QLabel#Title { font-size: 18px; font-weight: bold; color: #FFFFFF; }
+    QLabel#Subtitle { color: #AAAAAA; font-size: 13px; }
+
+    /* INPUTS */
+    QComboBox {
+        background-color: #2D2D2D;
+        border: 1px solid #3E3E3E;
         border-radius: 6px;
-        margin-top: 12px;
-        padding-top: 10px;
-        font-weight: bold;
-        color: #4fa3d1;
+        padding: 5px 10px;
+        min-width: 100px;
     }
-    QGroupBox::title {
-        subcontrol-origin: margin;
-        subcontrol-position: top left;
-        padding: 0 5px;
-        left: 10px;
+    QComboBox::drop-down { border: 0px; }
+    
+    /* SPINBOX CORRIGIDO */
+    QSpinBox {
+        background-color: #2D2D2D;
+        border: 1px solid #3E3E3E;
+        border-radius: 6px;
+        padding: 5px 10px;
     }
+    QSpinBox:disabled {
+        background-color: #202020;
+        color: #555555;
+        border-color: #252525;
+    }
+    QSpinBox::up-button, QSpinBox::down-button {
+        background-color: #383838;
+        width: 20px;
+        margin: 1px;
+        border-radius: 2px;
+    }
+    QSpinBox::up-button:hover, QSpinBox::down-button:hover {
+        background-color: #505050;
+    }
+
+    /* BOTOES */
     QPushButton {
         background-color: #333333;
-        border: 1px solid #444444;
-        border-radius: 4px;
-        padding: 8px 15px;
-        color: #ffffff;
+        border: 1px solid #3E3E3E;
+        border-radius: 6px;
+        padding: 10px 20px;
+        font-weight: 600;
     }
-    QPushButton:hover {
-        background-color: #444444;
-        border-color: #555555;
+    QPushButton:hover { background-color: #444444; }
+    
+    QPushButton#PrimaryButton {
+        background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #0078D4, stop:1 #005A9E);
+        border: none; color: white;
     }
-    QPushButton:pressed {
-        background-color: #222222;
+    QPushButton#PrimaryButton:hover {
+        background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #1084E3, stop:1 #0066B4);
     }
-    QPushButton:disabled {
-        background-color: #2a2a2a;
-        color: #666666;
-        border-color: #333333;
-    }
-    QPushButton#primary {
-        background-color: #0078d4;
-        border: 1px solid #005a9e;
-        font-weight: bold;
-        font-size: 15px;
-    }
-    QPushButton#primary:hover {
-        background-color: #106ebe;
-    }
-    QPushButton#primary:pressed {
-        background-color: #005a9e;
-    }
-    QPushButton#danger {
-        background-color: #c42b1c;
-        border: 1px solid #a80000;
-    }
-    QPushButton#danger:hover {
-        background-color: #b00020;
-    }
-    QComboBox, QSpinBox {
-        background-color: #2d2d2d;
-        border: 1px solid #444444;
-        border-radius: 4px;
-        padding: 5px;
-        color: #ffffff;
-    }
-    QComboBox::drop-down {
-        border: 0px;
-    }
+    QPushButton#PrimaryButton:disabled { background-color: #2C2C2C; color: #555555; }
+    
+    QPushButton#DangerButton { background-color: #C42B1C; border: none; }
+    QPushButton#DangerButton:hover { background-color: #B00020; }
+    
     QProgressBar {
-        border: 1px solid #444444;
-        border-radius: 4px;
-        text-align: center;
-        background-color: #2d2d2d;
+        border: none; background-color: #2D2D2D; border-radius: 4px; height: 8px; text-align: center;
     }
-    QProgressBar::chunk {
-        background-color: #0078d4;
-        border-radius: 3px;
-    }
-    QLabel#path_label {
-        color: #aaaaaa;
-        font-style: italic;
-        font-size: 12px;
-    }
+    QProgressBar::chunk { background-color: #0078D4; border-radius: 4px; }
 """
 
-# --- Classe Worker (Lógica em Segundo Plano) ---
+# --- WORKER THREAD (Lógica de Processamento) ---
 class TranscriptionWorker(QThread):
     status_update = pyqtSignal(str)
     progress_update = pyqtSignal(int)
     finished = pyqtSignal(bool, str)
 
-    def __init__(self, selected_file, srt_save_path, video_save_path, subtitle_type, max_words, process_type, model_size):
+    def __init__(self, config):
         super().__init__()
-        self.selected_file = selected_file
-        self.srt_save_path = srt_save_path
-        self.video_save_path = video_save_path
-        self.subtitle_type = subtitle_type
-        self.max_words = max_words
-        self.process_type = process_type
-        self.model_size = model_size
+        self.config = config
         self._is_running = True
 
     def run(self):
         try:
-            # --- Etapa 1: Carregar Modelo ---
-            self.status_update.emit(f"Carregando modelo Whisper '{self.model_size}'...")
+            # 1. Carregar Modelo
+            self.status_update.emit(f"🚀 Carregando modelo Whisper '{self.config['model']}'...")
             self.progress_update.emit(5)
             
             try:
-                model = whisper.load_model(self.model_size)
+                # O patch de SSL lá em cima permite que isso funcione no Mac agora
+                model = whisper.load_model(self.config['model'])
             except Exception as e:
-                self.finished.emit(False, f"Erro ao carregar modelo '{self.model_size}'.\nVerifique se o 'openai-whisper' está atualizado.\nErro: {str(e)}")
+                self.finished.emit(False, f"Erro ao carregar modelo.\n{str(e)}")
                 return
 
             if not self._is_running: return
 
-            # --- Etapa 2: Transcrever Áudio ---
-            self.status_update.emit("Transcrevendo áudio... (Isso pode demorar dependendo da GPU/CPU)")
-            QApplication.processEvents()
-            
-            # Nota: O Whisper padrão não fornece callback de progresso nativo facilmente nesta chamada
-            # Se fosse o 'faster-whisper', seria mais fácil obter o progresso real da transcrição.
-            result = model.transcribe(self.selected_file, word_timestamps=True)
+            # 2. Transcrever
+            self.status_update.emit("🎙️ Transcrevendo áudio... (Aguarde)")
+            result = model.transcribe(self.config['file_path'], word_timestamps=True)
             
             if not self._is_running: return
 
-            # --- Etapa 3: Gerar Arquivo SRT ---
-            self.status_update.emit(f"Processando segmentos...")
-            total_segments = len(result.get('segments', []))
+            # 3. Gerar SRT (Com lógica inteligente de Maiúsculas)
+            self.status_update.emit("📝 Processando e agrupando legendas...")
+            self.progress_update.emit(80)
             
-            if total_segments == 0:
-                 self.finished.emit(True, f"Concluído. Nenhuma fala detectada. SRT vazio salvo.")
-                 return
-
-            with open(self.srt_save_path, "w", encoding='utf-8') as f:
-                counter = 1
-                for i, segment in enumerate(result['segments']):
-                    if not self._is_running: return
-
-                    words_in_segment = segment.get('words', [])
-                    if not words_in_segment: continue
-
-                    if self.subtitle_type == "Palavra por palavra":
-                        for word_info in words_in_segment:
-                            start = word_info['start']
-                            end = word_info['end']
-                            word = word_info['word']
-                            if start >= end: end = start + 0.100
-                            f.write(f"{counter}\n")
-                            f.write(f"{self.format_timestamp(start)} --> {self.format_timestamp(end)}\n")
-                            f.write(f"{word.strip()}\n\n")
-                            counter += 1
-                    else: # Por frases (agrupado)
-                        current_phrase_words = []
-                        phrase_start_time = words_in_segment[0]['start']
-                        
-                        for idx, word_info in enumerate(words_in_segment):
-                             # FIX: Remove espaços extras de cada palavra antes de adicionar à lista
-                             current_phrase_words.append(word_info['word'].strip())
-                             word_end_time = word_info['end']
-
-                             # Lógica de quebra de frase
-                             if len(current_phrase_words) >= self.max_words or idx == len(words_in_segment) - 1:
-                                 phrase_end_time = word_end_time
-                                 if phrase_end_time <= phrase_start_time:
-                                      phrase_end_time = phrase_start_time + 0.500
-                                 
-                                 f.write(f"{counter}\n")
-                                 f.write(f"{self.format_timestamp(phrase_start_time)} --> {self.format_timestamp(phrase_end_time)}\n")
-                                 # FIX: Junta as palavras com um único espaço limpo
-                                 f.write(f"{' '.join(current_phrase_words)}\n\n")
-                                 counter += 1
-
-                                 if idx < len(words_in_segment) - 1:
-                                      current_phrase_words = []
-                                      phrase_start_time = words_in_segment[idx+1]['start']
-
-                    # Atualizar progresso (Simulado para 50-90% durante a escrita, já que a transcrição acabou)
-                    progress = 50 + int(((i + 1) / total_segments) * 40)
-                    self.progress_update.emit(progress)
+            self._generate_srt(result, self.config['srt_path'])
 
             if not self._is_running: return
 
-            # --- Etapa 4: Gerar Vídeo (Opcional) ---
-            if self.process_type == "Gerar SRT e Vídeo Legendado":
-                self.status_update.emit(f"Renderizando vídeo com FFmpeg...")
+            # 4. Renderizar Vídeo (Se selecionado)
+            if self.config['generate_video']:
+                self.status_update.emit("🎬 Renderizando vídeo com FFmpeg...")
                 self.progress_update.emit(90)
-                QApplication.processEvents()
-
-                ffmpeg_subtitle_path = self.srt_save_path.replace("\\", "/")
-                # Escape para Windows no filtro subtitles do ffmpeg
-                if sys.platform == "win32":
-                    ffmpeg_subtitle_path = ffmpeg_subtitle_path.replace(":", "\\:")
-
-                comando_ffmpeg = [
-                    "ffmpeg", "-y", "-i", self.selected_file,
-                    "-vf", f"subtitles='{ffmpeg_subtitle_path}'",
-                    "-c:v", "libx264", "-preset", "fast", "-crf", "23",
-                    "-c:a", "aac", "-b:a", "192k",
-                    self.video_save_path
-                ]
-
-                # Execução do FFmpeg
-                process = subprocess.Popen(
-                    comando_ffmpeg, 
-                    stderr=subprocess.PIPE, 
-                    stdout=subprocess.PIPE, 
-                    text=True, 
-                    encoding='utf-8', 
-                    errors='replace'
-                )
-
-                while self._is_running:
-                     if process.poll() is not None: break
-                     time.sleep(0.1)
-                     QApplication.processEvents()
-
-                if not self._is_running:
-                     process.terminate()
-                     self.finished.emit(False, "Cancelado durante a renderização.")
-                     return
-
-                if process.returncode != 0:
-                     stderr_output = process.stderr.read()
-                     raise subprocess.CalledProcessError(process.returncode, comando_ffmpeg, stderr=stderr_output)
-
-            # --- Conclusão ---
-            self.progress_update.emit(100)
-            msg = f"Sucesso!\nSRT: {os.path.basename(self.srt_save_path)}"
-            if self.process_type == "Gerar SRT e Vídeo Legendado":
-                msg += f"\nVídeo: {os.path.basename(self.video_save_path)}"
+                self._render_video()
             
+            self.progress_update.emit(100)
+            msg = f"Processo concluído!\nSRT salvo em: {os.path.basename(self.config['srt_path'])}"
             self.finished.emit(True, msg)
 
         except Exception as e:
-            print(traceback.format_exc())
-            self.finished.emit(False, f"Erro: {str(e)}")
+            traceback.print_exc()
+            self.finished.emit(False, f"Erro inesperado: {str(e)}")
 
+    def _generate_srt(self, result, path):
+        all_words = []
+        for segment in result.get('segments', []):
+            for word_data in segment.get('words', []):
+                all_words.append(word_data)
+
+        max_words = self.config['max_words']
+        is_phrase_mode = self.config['subtitle_type'] == "Frases Completas"
+        
+        # Hard limit de segurança
+        hard_limit = max_words + 4 
+
+        with open(path, "w", encoding='utf-8') as f:
+            counter = 1
+            
+            if not is_phrase_mode:
+                for w in all_words:
+                    start, end = w['start'], w['end']
+                    if start >= end: end = start + 0.1
+                    f.write(f"{counter}\n{self._fmt_time(start)} --> {self._fmt_time(end)}\n{w['word'].strip()}\n\n")
+                    counter += 1
+            
+            else:
+                current_chunk = []
+                
+                for i, w in enumerate(all_words):
+                    current_chunk.append(w)
+                    
+                    current_text = w['word'].strip()
+                    is_curr_cap = current_text and current_text[0].isupper()
+                    
+                    is_next_cap = False
+                    if i < len(all_words) - 1:
+                        next_text = all_words[i+1]['word'].strip()
+                        if next_text and next_text[0].isupper():
+                            is_next_cap = True
+
+                    in_cap_sequence = is_curr_cap and is_next_cap
+                    
+                    should_break = False
+                    chunk_len = len(current_chunk)
+
+                    if chunk_len >= max_words:
+                        should_break = True
+                        if in_cap_sequence and chunk_len < hard_limit:
+                            should_break = False
+                    
+                    if chunk_len >= hard_limit:
+                        should_break = True
+                        
+                    if i == len(all_words) - 1:
+                        should_break = True
+
+                    if should_break:
+                        if current_chunk:
+                            start_time = current_chunk[0]['start']
+                            end_time = current_chunk[-1]['end']
+                            if end_time <= start_time: end_time = start_time + 1.0
+                            
+                            text_content = "".join([cw['word'] for cw in current_chunk]).strip()
+                            
+                            f.write(f"{counter}\n")
+                            f.write(f"{self._fmt_time(start_time)} --> {self._fmt_time(end_time)}\n")
+                            f.write(f"{text_content}\n\n")
+                            
+                            counter += 1
+                            current_chunk = []
+
+    def _render_video(self):
+        sub_path = self.config['srt_path'].replace("\\", "/").replace(":", "\\:")
+        
+        cmd = [
+            "ffmpeg", "-y", "-i", self.config['file_path'],
+            "-vf", f"subtitles='{sub_path}'",
+            "-c:v", "libx264", "-preset", "fast", "-crf", "23",
+            "-c:a", "aac", "-b:a", "192k",
+            self.config['video_path']
+        ]
+
+        startupinfo = None
+        if sys.platform == "win32":
+            startupinfo = subprocess.STARTUPINFO()
+            startupinfo.dwFlags |= subprocess.STARTF_USESHOWWINDOW
+
+        process = subprocess.Popen(
+            cmd, stdout=subprocess.PIPE, stderr=subprocess.PIPE, 
+            text=True, encoding='utf-8', startupinfo=startupinfo
+        )
+
+        while self._is_running:
+            if process.poll() is not None: break
+            time.sleep(0.2)
+        
+        if not self._is_running:
+            process.terminate()
+            raise Exception("Cancelado pelo usuário.")
+        
+        if process.returncode != 0:
+            err = process.stderr.read()
+            raise Exception(f"Erro FFmpeg: {err}")
+
+    def _fmt_time(self, seconds):
+        seconds = max(0, seconds)
+        total_seconds = int(seconds)
+        milliseconds = int((seconds - total_seconds) * 1000)
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        secs = total_seconds % 60
+        return f"{hours:02}:{minutes:02}:{secs:02},{milliseconds:03}"
+    
     def stop(self):
         self._is_running = False
 
-    def format_timestamp(self, seconds_float):
-        seconds_float = max(0, seconds_float)
-        total_seconds = int(seconds_float)
-        milliseconds = int((seconds_float - total_seconds) * 1000)
-        hours = total_seconds // 3600
-        minutes = (total_seconds % 3600) // 60
-        seconds = total_seconds % 60
-        return f"{hours:02}:{minutes:02}:{seconds:02},{milliseconds:03}"
+# --- WIDGET DROP ZONE ---
+class DropZone(QFrame):
+    fileDropped = pyqtSignal(str)
 
-
-# --- Interface Gráfica Principal ---
-class SubtitleApp(QWidget):
     def __init__(self):
         super().__init__()
-        self.selected_file = None
-        self.srt_save_path = None
-        self.video_save_path = None
+        self.setObjectName("DropZone")
+        self.setAcceptDrops(True)
+        self.setMinimumHeight(120)
+        
+        layout = QVBoxLayout()
+        layout.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.icon_label = QLabel("📂")
+        self.icon_label.setStyleSheet("font-size: 40px; background: transparent; border: none;")
+        self.icon_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        self.text_label = QLabel("Arraste um vídeo aqui ou clique")
+        self.text_label.setStyleSheet("color: #888888; font-weight: bold; background: transparent; border: none;")
+        self.text_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        
+        layout.addWidget(self.icon_label)
+        layout.addWidget(self.text_label)
+        self.setLayout(layout)
+
+    def mousePressEvent(self, event):
+        if event.button() == Qt.MouseButton.LeftButton:
+            self.open_file_dialog()
+
+    def open_file_dialog(self):
+        path, _ = QFileDialog.getOpenFileName(self, "Selecionar Vídeo", "", "Media (*.mp4 *.mov *.mkv *.mp3 *.wav)")
+        if path:
+            self.fileDropped.emit(path)
+
+    def dragEnterEvent(self, event: QDragEnterEvent):
+        if event.mimeData().hasUrls():
+            event.accept()
+            self.setStyleSheet("background-color: #2D2D30; border-color: #0078D4; border-style: solid;")
+        else:
+            event.ignore()
+
+    def dragLeaveEvent(self, event):
+        self.setStyleSheet("") 
+
+    def dropEvent(self, event: QDropEvent):
+        self.setStyleSheet("") 
+        files = [u.toLocalFile() for u in event.mimeData().urls()]
+        if files:
+            self.fileDropped.emit(files[0])
+
+# --- JANELA PRINCIPAL ---
+class ModernSubtitleApp(QMainWindow):
+    def __init__(self):
+        super().__init__()
         self.worker = None
+        self.selected_file = None
+        self.srt_path = None
+        self.video_path = None
         
-        self.initUI()
-        # Aplicar tema
-        self.setStyleSheet(STYLESHEET)
+        self.setWindowTitle("Whisper Auto-Caption AI")
+        self.resize(550, 780)
+        self.setup_ui()
 
-    def initUI(self):
-        main_layout = QVBoxLayout()
-        main_layout.setSpacing(15)
-        main_layout.setContentsMargins(20, 20, 20, 20)
+    def setup_ui(self):
+        central_widget = QWidget()
+        self.setCentralWidget(central_widget)
+        
+        main_layout = QVBoxLayout(central_widget)
+        main_layout.setSpacing(20)
+        main_layout.setContentsMargins(30, 30, 30, 30)
 
-        # --- Título ---
-        title_label = QLabel("AI Auto Subtitle Generator")
-        title_label.setStyleSheet("font-size: 18px; font-weight: bold; color: #ffffff; margin-bottom: 5px;")
-        title_label.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(title_label)
+        # Header
+        header = QVBoxLayout()
+        title = QLabel("AI Caption Generator")
+        title.setObjectName("Title")
+        title.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        header.addWidget(title)
+        main_layout.addLayout(header)
 
-        # --- Grupo 1: Entrada ---
-        input_group = QGroupBox("Arquivo de Entrada")
-        input_layout = QVBoxLayout()
+        # Arquivo
+        self.file_card = QFrame()
+        self.file_card.setObjectName("Card")
+        card_layout = QVBoxLayout(self.file_card)
         
-        btn_layout = QHBoxLayout()
-        self.file_button = QPushButton("Selecionar Vídeo")
-        self.file_button.setCursor(Qt.PointingHandCursor)
-        self.file_button.clicked.connect(self.open_file_chooser)
-        btn_layout.addWidget(self.file_button)
+        self.drop_zone = DropZone()
+        self.drop_zone.fileDropped.connect(self.on_file_selected)
         
-        self.selected_file_display = QLabel("Nenhum arquivo selecionado")
-        self.selected_file_display.setObjectName("path_label")
-        self.selected_file_display.setWordWrap(True)
-        
-        input_layout.addLayout(btn_layout)
-        input_layout.addWidget(self.selected_file_display)
-        input_group.setLayout(input_layout)
-        main_layout.addWidget(input_group)
+        self.file_label = QLabel("Nenhum arquivo selecionado")
+        self.file_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.file_label.setStyleSheet("color: #0078D4; font-weight: bold; margin-top: 5px;")
+        self.file_label.setVisible(False)
 
-        # --- Grupo 2: Configuração do Modelo (NOVO) ---
-        model_group = QGroupBox("Configurações do Modelo AI")
-        model_layout = QHBoxLayout()
+        card_layout.addWidget(QLabel("1. Arquivo de Entrada"))
+        card_layout.addWidget(self.drop_zone)
+        card_layout.addWidget(self.file_label)
+        main_layout.addWidget(self.file_card)
+
+        # Configurações
+        settings_card = QFrame()
+        settings_card.setObjectName("Card")
+        sett_layout = QVBoxLayout(settings_card)
+        sett_layout.addWidget(QLabel("2. Configurações"))
+
+        grid = QHBoxLayout()
         
-        lbl_model = QLabel("Modelo Whisper:")
+        # Col Esquerda
+        col1 = QVBoxLayout()
+        col1.addWidget(QLabel("Modelo AI:"))
         self.model_combo = QComboBox()
-        # Adicionando as opções solicitadas
-        self.model_combo.addItems(["base", "small", "medium", "large-v3", "turbo"])
-        self.model_combo.setCurrentText("small") # Default equilibrado
-        self.model_combo.setToolTip("Modelos maiores são mais precisos, mas exigem mais memória e tempo.")
-
-        model_layout.addWidget(lbl_model)
-        model_layout.addWidget(self.model_combo)
-        model_group.setLayout(model_layout)
-        main_layout.addWidget(model_group)
-
-        # --- Grupo 3: Estilo da Legenda ---
-        sub_group = QGroupBox("Estilo da Legenda")
-        sub_layout = QVBoxLayout()
+        self.model_combo.addItems(["tiny", "base", "small", "medium", "large-v3"])
+        self.model_combo.setCurrentText("small")
+        col1.addWidget(self.model_combo)
         
-        h_layout_sub = QHBoxLayout()
-        self.subtitle_type_combo = QComboBox()
-        self.subtitle_type_combo.addItems(["Palavra por palavra", "Frases Completas"])
-        self.subtitle_type_combo.setCurrentText("Frases Completas")
-        self.subtitle_type_combo.currentIndexChanged.connect(self.toggle_word_limit_option)
+        col1.addWidget(QLabel("Modo:"))
+        self.mode_combo = QComboBox()
+        self.mode_combo.addItems(["Apenas SRT", "SRT + Vídeo"])
+        col1.addWidget(self.mode_combo)
         
-        h_layout_sub.addWidget(QLabel("Formato:"))
-        h_layout_sub.addWidget(self.subtitle_type_combo)
-        sub_layout.addLayout(h_layout_sub)
-
-        # Configuração extra para frases
-        self.phrase_container = QWidget()
-        phrase_layout = QHBoxLayout(self.phrase_container)
-        phrase_layout.setContentsMargins(0, 5, 0, 0)
-        self.word_limit_spin = QSpinBox()
-        self.word_limit_spin.setRange(1, 50)
-        self.word_limit_spin.setValue(10)
-        phrase_layout.addWidget(QLabel("Máx. palavras por linha:"))
-        phrase_layout.addWidget(self.word_limit_spin)
-        sub_layout.addWidget(self.phrase_container)
+        # Col Direita
+        col2 = QVBoxLayout()
+        col2.addWidget(QLabel("Estilo:"))
+        self.style_combo = QComboBox()
+        self.style_combo.addItems(["Frases Completas", "Palavra por Palavra"])
+        self.style_combo.currentIndexChanged.connect(self.toggle_word_spin)
+        col2.addWidget(self.style_combo)
         
-        sub_group.setLayout(sub_layout)
-        main_layout.addWidget(sub_group)
-
-        # --- Grupo 4: Saída ---
-        out_group = QGroupBox("Configuração de Saída")
-        out_layout = QVBoxLayout()
-
-        # Tipo de Processamento
-        h_proc = QHBoxLayout()
-        self.process_type_combo = QComboBox()
-        self.process_type_combo.addItems(["Apenas Gerar SRT", "Gerar SRT e Vídeo Legendado"])
-        self.process_type_combo.currentIndexChanged.connect(self.toggle_video_save_options)
-        h_proc.addWidget(QLabel("Ação:"))
-        h_proc.addWidget(self.process_type_combo)
-        out_layout.addLayout(h_proc)
-
-        # Botões de Salvar
-        self.srt_save_button = QPushButton("Definir local do SRT...")
-        self.srt_save_button.clicked.connect(self.select_srt_save_path)
-        out_layout.addWidget(self.srt_save_button)
-        self.srt_path_display = QLabel("")
-        self.srt_path_display.setObjectName("path_label")
-        out_layout.addWidget(self.srt_path_display)
-
-        self.video_save_button = QPushButton("Definir local do Vídeo...")
-        self.video_save_button.clicked.connect(self.select_video_save_path)
-        self.video_save_button.setVisible(False)
-        out_layout.addWidget(self.video_save_button)
-        self.video_path_display = QLabel("")
-        self.video_path_display.setObjectName("path_label")
-        self.video_path_display.setVisible(False)
+        self.limit_label = QLabel("Max. Palavras:")
+        col2.addWidget(self.limit_label)
         
-        out_group.setLayout(out_layout)
-        main_layout.addWidget(out_group)
+        self.word_spin = QSpinBox()
+        self.word_spin.setRange(1, 50)
+        self.word_spin.setValue(10)
+        self.word_spin.setCursor(Qt.CursorShape.PointingHandCursor)
+        col2.addWidget(self.word_spin)
 
-        # --- Área de Ação e Status ---
-        main_layout.addStretch() # Empurra tudo pra cima
+        grid.addLayout(col1)
+        grid.addSpacing(20)
+        grid.addLayout(col2)
+        sett_layout.addLayout(grid)
+        main_layout.addWidget(settings_card)
+
+        # Status
+        status_layout = QVBoxLayout()
+        self.status_label = QLabel("Aguardando...")
+        self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
+        self.pbar = QProgressBar()
+        self.pbar.setValue(0)
         
-        self.status_label = QLabel("Aguardando início...")
-        self.status_label.setAlignment(Qt.AlignCenter)
-        main_layout.addWidget(self.status_label)
+        self.btn_action = QPushButton("INICIAR PROCESSO")
+        self.btn_action.setObjectName("PrimaryButton")
+        self.btn_action.setCursor(Qt.CursorShape.PointingHandCursor)
+        self.btn_action.clicked.connect(self.start_processing)
+        self.btn_action.setEnabled(False)
 
-        self.progress_bar = QProgressBar()
-        self.progress_bar.setRange(0, 100)
-        self.progress_bar.setValue(0)
-        self.progress_bar.setTextVisible(False)
-        self.progress_bar.setFixedHeight(10)
-        main_layout.addWidget(self.progress_bar)
+        status_layout.addWidget(self.status_label)
+        status_layout.addWidget(self.pbar)
+        status_layout.addSpacing(5)
+        status_layout.addWidget(self.btn_action)
+        
+        main_layout.addStretch()
+        main_layout.addLayout(status_layout)
 
-        self.process_button = QPushButton("INICIAR TRANSCRIÇÃO")
-        self.process_button.setObjectName("primary")
-        self.process_button.setMinimumHeight(45)
-        self.process_button.setCursor(Qt.PointingHandCursor)
-        self.process_button.clicked.connect(self.start_or_cancel_processing)
-        self.process_button.setEnabled(False)
-        main_layout.addWidget(self.process_button)
+        # Inicializa estado do spinbox
+        self.toggle_word_spin()
 
-        self.setLayout(main_layout)
-        self.setWindowTitle("Whisper Subtitle Pro")
-        self.resize(500, 750)
+    def toggle_word_spin(self):
+        is_phrase_mode = self.style_combo.currentText() == "Frases Completas"
+        self.word_spin.setEnabled(is_phrase_mode)
+        if is_phrase_mode:
+            self.limit_label.setStyleSheet("color: #E0E0E0;")
+        else:
+            self.limit_label.setStyleSheet("color: #555555;")
 
-    # --- Lógica de UI ---
+    def on_file_selected(self, path):
+        self.selected_file = path
+        name = os.path.basename(path)
+        self.drop_zone.text_label.setText(name)
+        self.drop_zone.icon_label.setText("🎞️")
+        self.file_label.setText(path)
+        self.file_label.setVisible(True)
+        
+        folder = os.path.dirname(path)
+        base_name = os.path.splitext(name)[0]
+        self.srt_path = os.path.join(folder, f"{base_name}.srt")
+        self.video_path = os.path.join(folder, f"{base_name}_legendado.mp4")
+        
+        self.check_ready()
 
-    def toggle_word_limit_option(self):
-        is_phrase = self.subtitle_type_combo.currentText() == "Frases Completas"
-        self.phrase_container.setVisible(is_phrase)
+    def check_ready(self):
+        if self.selected_file:
+            self.btn_action.setEnabled(True)
+            self.status_label.setText("Pronto para iniciar")
 
-    def toggle_video_save_options(self):
-        is_video = self.process_type_combo.currentText() == "Gerar SRT e Vídeo Legendado"
-        self.video_save_button.setVisible(is_video)
-        self.video_path_display.setVisible(is_video)
-        self.check_enable_process_button()
-
-    def check_enable_process_button(self):
+    def start_processing(self):
         if self.worker and self.worker.isRunning():
-            self.process_button.setEnabled(True)
+            self.worker.stop()
+            self.btn_action.setText("Cancelando...")
+            self.btn_action.setEnabled(False)
             return
 
-        ready = False
-        if self.selected_file and self.srt_save_path:
-            if self.process_type_combo.currentText() == "Gerar SRT e Vídeo Legendado":
-                if self.video_save_path: ready = True
-            else:
-                ready = True
+        config = {
+            'file_path': self.selected_file,
+            'srt_path': self.srt_path,
+            'video_path': self.video_path,
+            'model': self.model_combo.currentText(),
+            'subtitle_type': self.style_combo.currentText(),
+            'max_words': self.word_spin.value(),
+            'generate_video': self.mode_combo.currentText() == "SRT + Vídeo"
+        }
+
+        self.btn_action.setText("CANCELAR")
+        self.btn_action.setObjectName("DangerButton")
+        self.btn_action.style().unpolish(self.btn_action)
+        self.btn_action.style().polish(self.btn_action)
         
-        self.process_button.setEnabled(ready)
-        if not ready:
-            self.process_button.setText("INICIAR TRANSCRIÇÃO")
-            self.process_button.setObjectName("primary")
-            self.style().unpolish(self.process_button)
-            self.style().polish(self.process_button)
-
-    # --- Seletores de Arquivo ---
-
-    def open_file_chooser(self):
-        if self.worker and self.worker.isRunning(): return
-        path, _ = QFileDialog.getOpenFileName(self, "Selecionar Vídeo", "", "Vídeos (*.mp4 *.mov *.avi *.mkv *.flv *.mp3 *.wav)")
-        if path:
-            self.selected_file = path
-            self.selected_file_display.setText(os.path.basename(path))
-            
-            # Resetar saídas
-            self.srt_save_path = None
-            self.video_save_path = None
-            self.srt_path_display.setText("")
-            self.video_path_display.setText("")
-            
-            # Sugerir nomes automaticamente seria uma melhoria UX
-            folder = os.path.dirname(path)
-            name = os.path.splitext(os.path.basename(path))[0]
-            self.srt_save_path = os.path.join(folder, f"{name}.srt")
-            self.srt_path_display.setText(f"SRT: {os.path.basename(self.srt_save_path)}")
-            
-            self.check_enable_process_button()
-
-    def select_srt_save_path(self):
-        if self.worker and self.worker.isRunning(): return
-        default_name = "legenda.srt"
-        if self.selected_file:
-            default_name = os.path.splitext(os.path.basename(self.selected_file))[0] + ".srt"
-            
-        path, _ = QFileDialog.getSaveFileName(self, "Salvar SRT", default_name, "Legenda (*.srt)")
-        if path:
-            self.srt_save_path = path
-            self.srt_path_display.setText(f"SRT: {os.path.basename(path)}")
-            self.check_enable_process_button()
-
-    def select_video_save_path(self):
-        if self.worker and self.worker.isRunning(): return
-        default_name = "video_legendado.mp4"
-        if self.selected_file:
-             default_name = os.path.splitext(os.path.basename(self.selected_file))[0] + "_subbed.mp4"
-             
-        path, _ = QFileDialog.getSaveFileName(self, "Salvar Vídeo", default_name, "Vídeo (*.mp4)")
-        if path:
-            self.video_save_path = path
-            self.video_path_display.setText(f"Vídeo: {os.path.basename(path)}")
-            self.check_enable_process_button()
-
-    # --- Controle do Processo ---
-
-    def start_or_cancel_processing(self):
-        if self.worker and self.worker.isRunning():
-            # Cancelar
-            self.worker.stop()
-            self.process_button.setText("Cancelando...")
-            self.process_button.setEnabled(False)
-        else:
-            # Iniciar
-            self.ui_state_processing(True)
-            
-            # Capturar modelo selecionado
-            selected_model = self.model_combo.currentText()
-            
-            self.worker = TranscriptionWorker(
-                selected_file=self.selected_file,
-                srt_save_path=self.srt_save_path,
-                video_save_path=self.video_save_path,
-                subtitle_type=self.subtitle_type_combo.currentText(),
-                max_words=self.word_limit_spin.value(),
-                process_type=self.process_type_combo.currentText(),
-                model_size=selected_model # Passando o modelo escolhido
-            )
-            
-            self.worker.status_update.connect(self.status_label.setText)
-            self.worker.progress_update.connect(self.progress_bar.setValue)
-            self.worker.finished.connect(self.on_finished)
-            self.worker.start()
-
-    def ui_state_processing(self, is_processing):
-        # Desabilitar entradas
-        self.file_button.setEnabled(not is_processing)
-        self.model_combo.setEnabled(not is_processing)
-        self.subtitle_type_combo.setEnabled(not is_processing)
-        self.srt_save_button.setEnabled(not is_processing)
-        self.video_save_button.setEnabled(not is_processing)
-        
-        if is_processing:
-            self.process_button.setText("CANCELAR")
-            self.process_button.setObjectName("danger") # Muda cor para vermelho
-            self.progress_bar.setValue(0)
-        else:
-            self.process_button.setText("INICIAR TRANSCRIÇÃO")
-            self.process_button.setObjectName("primary") # Volta para azul
-        
-        # Forçar atualização de estilo do botão
-        self.style().unpolish(self.process_button)
-        self.style().polish(self.process_button)
+        self.worker = TranscriptionWorker(config)
+        self.worker.status_update.connect(self.status_label.setText)
+        self.worker.progress_update.connect(self.pbar.setValue)
+        self.worker.finished.connect(self.on_finished)
+        self.worker.start()
 
     def on_finished(self, success, message):
-        self.ui_state_processing(False)
-        self.status_label.setText("Pronto" if success else "Erro")
-        
-        if success:
-            QMessageBox.information(self, "Concluído", message)
-            self.progress_bar.setValue(100)
-        else:
-            if "Cancelado" in message:
-                self.progress_bar.setValue(0)
-                self.status_label.setText("Cancelado pelo usuário")
-            else:
-                QMessageBox.critical(self, "Erro", message)
-                self.progress_bar.setValue(0)
+        self.btn_action.setText("INICIAR PROCESSO")
+        self.btn_action.setObjectName("PrimaryButton")
+        self.btn_action.setEnabled(True)
+        self.btn_action.style().unpolish(self.btn_action)
+        self.btn_action.style().polish(self.btn_action)
 
-    def closeEvent(self, event):
-        if self.worker and self.worker.isRunning():
-            self.worker.stop()
-            self.worker.wait(1000)
-        event.accept()
+        if success:
+            self.pbar.setValue(100)
+            self.status_label.setText("Concluído!")
+            QMessageBox.information(self, "Sucesso", message)
+        else:
+            self.pbar.setValue(0)
+            self.status_label.setText("Status")
+            if "Cancelado" not in message:
+                QMessageBox.critical(self, "Erro", message)
 
 if __name__ == "__main__":
     app = QApplication(sys.argv)
-    # Configurar estilo Fusion para garantir que QSS funcione bem em todas plataformas
-    app.setStyle("Fusion") 
-    window = SubtitleApp()
+    app.setStyleSheet(MODERN_STYLESHEET)
+    window = ModernSubtitleApp()
     window.show()
-    sys.exit(app.exec_())
+    sys.exit(app.exec())

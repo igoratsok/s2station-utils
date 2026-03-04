@@ -1,0 +1,5 @@
+PyQt6
+pydub
+spleeter
+numpy<2.0
+setuptools

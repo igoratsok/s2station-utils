@@ -3,11 +3,12 @@ import os
 import time
 import subprocess
 import traceback
-import ssl  # <--- IMPORTANTE: Adicionado para corrigir o erro
+import ssl
+import re
+from datetime import timedelta, datetime
 import whisper
 
 # --- CORREÇÃO DE SSL PARA MACOS ---
-# Isso permite baixar o modelo sem o erro CERTIFICATE_VERIFY_FAILED
 try:
     _create_unverified_https_context = ssl._create_unverified_context
 except AttributeError:
@@ -26,96 +27,178 @@ from PyQt6.QtWidgets import (
 
 # --- CONFIGURAÇÃO DE ESTILO (CSS MODERN) ---
 MODERN_STYLESHEET = """
-    QMainWindow {
-        background-color: #121212;
-    }
-    QWidget {
-        color: #E0E0E0;
-        font-family: 'Segoe UI', 'Inter', sans-serif;
-        font-size: 14px;
-    }
-    /* Cards (Container) */
-    QFrame#Card {
-        background-color: #1E1E1E;
-        border-radius: 12px;
-        border: 1px solid #333333;
-    }
-    /* Drop Zone */
-    QFrame#DropZone {
-        background-color: #252526;
-        border: 2px dashed #444444;
-        border-radius: 12px;
-    }
-    QFrame#DropZone:hover {
-        background-color: #2D2D30;
-        border-color: #0078D4;
-        border-style: solid;
-    }
-    /* Labels */
+    QMainWindow { background-color: #121212; }
+    QWidget { color: #E0E0E0; font-family: 'Segoe UI', 'Inter', sans-serif; font-size: 14px; }
+    QFrame#Card { background-color: #1E1E1E; border-radius: 12px; border: 1px solid #333333; }
+    QFrame#DropZone { background-color: #252526; border: 2px dashed #444444; border-radius: 12px; }
+    QFrame#DropZone:hover { background-color: #2D2D30; border-color: #0078D4; border-style: solid; }
     QLabel#Title { font-size: 18px; font-weight: bold; color: #FFFFFF; }
-    QLabel#Subtitle { color: #AAAAAA; font-size: 13px; }
-
-    /* INPUTS */
-    QComboBox {
-        background-color: #2D2D2D;
-        border: 1px solid #3E3E3E;
-        border-radius: 6px;
-        padding: 5px 10px;
-        min-width: 100px;
-    }
+    QComboBox { background-color: #2D2D2D; border: 1px solid #3E3E3E; border-radius: 6px; padding: 5px 10px; min-width: 100px; }
     QComboBox::drop-down { border: 0px; }
-    
-    /* SPINBOX CORRIGIDO */
-    QSpinBox {
-        background-color: #2D2D2D;
-        border: 1px solid #3E3E3E;
-        border-radius: 6px;
-        padding: 5px 10px;
-    }
-    QSpinBox:disabled {
-        background-color: #202020;
-        color: #555555;
-        border-color: #252525;
-    }
-    QSpinBox::up-button, QSpinBox::down-button {
-        background-color: #383838;
-        width: 20px;
-        margin: 1px;
-        border-radius: 2px;
-    }
-    QSpinBox::up-button:hover, QSpinBox::down-button:hover {
-        background-color: #505050;
-    }
-
-    /* BOTOES */
-    QPushButton {
-        background-color: #333333;
-        border: 1px solid #3E3E3E;
-        border-radius: 6px;
-        padding: 10px 20px;
-        font-weight: 600;
-    }
+    QSpinBox { background-color: #2D2D2D; border: 1px solid #3E3E3E; border-radius: 6px; padding: 5px 10px; }
+    QSpinBox:disabled { background-color: #202020; color: #555555; border-color: #252525; }
+    QSpinBox::up-button, QSpinBox::down-button { background-color: #383838; width: 20px; margin: 1px; border-radius: 2px; }
+    QSpinBox::up-button:hover, QSpinBox::down-button:hover { background-color: #505050; }
+    QPushButton { background-color: #333333; border: 1px solid #3E3E3E; border-radius: 6px; padding: 10px 20px; font-weight: 600; }
     QPushButton:hover { background-color: #444444; }
-    
-    QPushButton#PrimaryButton {
-        background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #0078D4, stop:1 #005A9E);
-        border: none; color: white;
-    }
-    QPushButton#PrimaryButton:hover {
-        background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #1084E3, stop:1 #0066B4);
-    }
+    QPushButton#PrimaryButton { background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #0078D4, stop:1 #005A9E); border: none; color: white; }
+    QPushButton#PrimaryButton:hover { background-color: qlineargradient(spread:pad, x1:0, y1:0, x2:1, y2:0, stop:0 #1084E3, stop:1 #0066B4); }
     QPushButton#PrimaryButton:disabled { background-color: #2C2C2C; color: #555555; }
-    
     QPushButton#DangerButton { background-color: #C42B1C; border: none; }
     QPushButton#DangerButton:hover { background-color: #B00020; }
-    
-    QProgressBar {
-        border: none; background-color: #2D2D2D; border-radius: 4px; height: 8px; text-align: center;
-    }
+    QProgressBar { border: none; background-color: #2D2D2D; border-radius: 4px; height: 8px; text-align: center; }
     QProgressBar::chunk { background-color: #0078D4; border-radius: 4px; }
 """
 
-# --- WORKER THREAD (Lógica de Processamento) ---
+# --- LÓGICA INTELIGENTE DE SRT ---
+class SubtitleItem:
+    def __init__(self, index, start, end, text):
+        self.index = index
+        self.start = start  # timedelta
+        self.end = end      # timedelta
+        self.text = text
+
+    def duration(self):
+        return self.end - self.start
+
+    def __repr__(self):
+        return f"{self.index} [{self.start} -> {self.end}]: {self.text}"
+
+class SRTProcessor:
+    def __init__(self):
+        self.subtitles = []
+
+    def format_time(self, td):
+        total_seconds = int(td.total_seconds())
+        hours = total_seconds // 3600
+        minutes = (total_seconds % 3600) // 60
+        seconds = total_seconds % 60
+        microseconds = td.microseconds
+        return f"{hours:02}:{minutes:02}:{seconds:02},{microseconds // 1000:03}"
+
+    def save_to_file(self, filepath, subtitles):
+        with open(filepath, 'w', encoding='utf-8') as f:
+            for i, sub in enumerate(subtitles):
+                f.write(f"{i + 1}\n")
+                f.write(f"{self.format_time(sub.start)} --> {self.format_time(sub.end)}\n")
+                f.write(f"{sub.text}\n\n")
+
+    def split_subtitles(self, max_chars=40):
+        new_subs = []
+        
+        # Regex para encontrar espaços que vêm logo antes de um número seguido de ponto (Ex: " 1. ", " 2. ")
+        # (?<=\S)   -> Garante que há algo antes do espaço (não está no início da string)
+        # \s+       -> O espaço em si onde o corte vai acontecer
+        # (?=\d+\.\s) -> Garante que logo após o espaço vem um número, um ponto e outro espaço
+        list_pattern = re.compile(r'(?<=\S)\s+(?=\d+\.\s)')
+
+        for sub in self.subtitles:
+            clean_text = sub.text.replace('\n', ' ')
+            
+            # --- PASSO 1: Força o corte antes de itens numerados ---
+            parts = list_pattern.split(clean_text)
+            
+            total_len = len(clean_text)
+            total_duration = (sub.end - sub.start).total_seconds()
+            current_start = sub.start
+            
+            for i, part in enumerate(parts):
+                part = part.strip()
+                if not part:
+                    continue
+                    
+                # Calcula o tempo proporcional apenas desta parte do texto
+                ratio = len(part) / total_len if total_len > 0 else 0
+                part_duration = total_duration * ratio
+                
+                if i == len(parts) - 1:
+                    current_end = sub.end # Garante que a última parte pega o final exato do tempo
+                else:
+                    current_end = current_start + timedelta(seconds=part_duration)
+                    
+                # --- PASSO 2: Aplica a lógica de tamanho/inteligente na parte já separada ---
+                if len(part) <= max_chars:
+                    new_subs.append(SubtitleItem(0, current_start, current_end, part))
+                else:
+                    self._recursive_split(current_start, current_end, part, max_chars, new_subs)
+                    
+                # Atualiza o tempo inicial para o próximo bloco
+                current_start = current_end
+        
+        # Reordena os índices da legenda no final
+        for i, sub in enumerate(new_subs):
+            sub.index = i + 1
+            
+        return new_subs
+
+    def _recursive_split(self, start_time, end_time, text, max_chars, result_list):
+        if len(text) <= max_chars:
+            result_list.append(SubtitleItem(0, start_time, end_time, text))
+            return
+
+        split_idx = self._find_best_split_index(text)
+        if split_idx == -1 or split_idx == 0 or split_idx == len(text):
+            split_idx = len(text) // 2
+
+        part1_text = text[:split_idx].strip()
+        part2_text = text[split_idx:].strip()
+
+        total_len = len(text)
+        len1 = len(part1_text)
+        total_duration = (end_time - start_time).total_seconds()
+        
+        ratio = len1 / total_len if total_len > 0 else 0.5
+        duration1 = total_duration * ratio
+        mid_time = start_time + timedelta(seconds=duration1)
+
+        self._recursive_split(start_time, mid_time, part1_text, max_chars, result_list)
+        self._recursive_split(mid_time, end_time, part2_text, max_chars, result_list)
+
+    def _find_best_split_index(self, text):
+        mid = len(text) // 2
+        best_idx = -1
+        min_dist = float('inf')
+
+        punctuations = [
+            (r'[.?!]\s', 1.0),
+            (r'[,;:]\s', 1.5),
+            (r'\s', 3.0)
+        ]
+        connectors = {'of', 'the', 'del', 'da', 'de', 'do', 'in', 'on', 'at', 'e', 'and'}
+
+        for pattern_str, penalty_weight in punctuations:
+            for match in re.finditer(pattern_str, text):
+                idx = match.end()
+                dist = abs(idx - mid) * penalty_weight
+                is_strong_punctuation = '.' in pattern_str or '?' in pattern_str or '!' in pattern_str
+                
+                if not is_strong_punctuation:
+                    left_context = text[:match.start()]
+                    right_context = text[idx:]
+                    match_before = re.search(r'(\w+)[^\w]*$', left_context)
+                    match_after = re.search(r'^[^\w]*(\w+)', right_context)
+                    
+                    if match_before and match_after:
+                        word_before = match_before.group(1)
+                        word_after = match_after.group(1)
+                        if word_before[0].isupper() and word_after[0].isupper():
+                            dist *= 8.0
+                        elif word_before[0].isupper() and word_after.lower() in connectors:
+                             dist *= 5.0
+                        elif word_before.lower() in connectors and word_after[0].isupper():
+                             dist *= 5.0
+
+                if dist < min_dist:
+                    min_dist = dist
+                    best_idx = idx
+            
+            if best_idx != -1 and min_dist < (len(text) * 0.2):
+                break
+        
+        return best_idx
+
+
+# --- WORKER THREAD ---
 class TranscriptionWorker(QThread):
     status_update = pyqtSignal(str)
     progress_update = pyqtSignal(int)
@@ -128,12 +211,10 @@ class TranscriptionWorker(QThread):
 
     def run(self):
         try:
-            # 1. Carregar Modelo
             self.status_update.emit(f"🚀 Carregando modelo Whisper '{self.config['model']}'...")
             self.progress_update.emit(5)
             
             try:
-                # O patch de SSL lá em cima permite que isso funcione no Mac agora
                 model = whisper.load_model(self.config['model'])
             except Exception as e:
                 self.finished.emit(False, f"Erro ao carregar modelo.\n{str(e)}")
@@ -141,21 +222,18 @@ class TranscriptionWorker(QThread):
 
             if not self._is_running: return
 
-            # 2. Transcrever
             self.status_update.emit("🎙️ Transcrevendo áudio... (Aguarde)")
             result = model.transcribe(self.config['file_path'], word_timestamps=True)
             
             if not self._is_running: return
 
-            # 3. Gerar SRT (Com lógica inteligente de Maiúsculas)
-            self.status_update.emit("📝 Processando e agrupando legendas...")
+            self.status_update.emit("📝 Processando legendas...")
             self.progress_update.emit(80)
             
             self._generate_srt(result, self.config['srt_path'])
 
             if not self._is_running: return
 
-            # 4. Renderizar Vídeo (Se selecionado)
             if self.config['generate_video']:
                 self.status_update.emit("🎬 Renderizando vídeo com FFmpeg...")
                 self.progress_update.emit(90)
@@ -170,72 +248,30 @@ class TranscriptionWorker(QThread):
             self.finished.emit(False, f"Erro inesperado: {str(e)}")
 
     def _generate_srt(self, result, path):
-        all_words = []
-        for segment in result.get('segments', []):
-            for word_data in segment.get('words', []):
-                all_words.append(word_data)
-
-        max_words = self.config['max_words']
-        is_phrase_mode = self.config['subtitle_type'] == "Frases Completas"
+        is_phrase_mode = self.config['subtitle_type'] == "Frases Inteligentes"
         
-        # Hard limit de segurança
-        hard_limit = max_words + 4 
-
-        with open(path, "w", encoding='utf-8') as f:
-            counter = 1
+        if is_phrase_mode:
+            # Usa a lógica avançada do SRTProcessor
+            processor = SRTProcessor()
+            for i, segment in enumerate(result.get('segments', [])):
+                start = timedelta(seconds=segment['start'])
+                end = timedelta(seconds=segment['end'])
+                text = segment['text'].strip()
+                processor.subtitles.append(SubtitleItem(i+1, start, end, text))
             
-            if not is_phrase_mode:
-                for w in all_words:
-                    start, end = w['start'], w['end']
-                    if start >= end: end = start + 0.1
-                    f.write(f"{counter}\n{self._fmt_time(start)} --> {self._fmt_time(end)}\n{w['word'].strip()}\n\n")
-                    counter += 1
+            processed_subs = processor.split_subtitles(max_chars=self.config['max_chars'])
+            processor.save_to_file(path, processed_subs)
             
-            else:
-                current_chunk = []
-                
-                for i, w in enumerate(all_words):
-                    current_chunk.append(w)
-                    
-                    current_text = w['word'].strip()
-                    is_curr_cap = current_text and current_text[0].isupper()
-                    
-                    is_next_cap = False
-                    if i < len(all_words) - 1:
-                        next_text = all_words[i+1]['word'].strip()
-                        if next_text and next_text[0].isupper():
-                            is_next_cap = True
-
-                    in_cap_sequence = is_curr_cap and is_next_cap
-                    
-                    should_break = False
-                    chunk_len = len(current_chunk)
-
-                    if chunk_len >= max_words:
-                        should_break = True
-                        if in_cap_sequence and chunk_len < hard_limit:
-                            should_break = False
-                    
-                    if chunk_len >= hard_limit:
-                        should_break = True
-                        
-                    if i == len(all_words) - 1:
-                        should_break = True
-
-                    if should_break:
-                        if current_chunk:
-                            start_time = current_chunk[0]['start']
-                            end_time = current_chunk[-1]['end']
-                            if end_time <= start_time: end_time = start_time + 1.0
-                            
-                            text_content = "".join([cw['word'] for cw in current_chunk]).strip()
-                            
-                            f.write(f"{counter}\n")
-                            f.write(f"{self._fmt_time(start_time)} --> {self._fmt_time(end_time)}\n")
-                            f.write(f"{text_content}\n\n")
-                            
-                            counter += 1
-                            current_chunk = []
+        else:
+            # Lógica simples Palavra por Palavra (Mantendo word_timestamps exatos)
+            with open(path, "w", encoding='utf-8') as f:
+                counter = 1
+                for segment in result.get('segments', []):
+                    for w in segment.get('words', []):
+                        start, end = w['start'], w['end']
+                        if start >= end: end = start + 0.1
+                        f.write(f"{counter}\n{self._fmt_time_simple(start)} --> {self._fmt_time_simple(end)}\n{w['word'].strip()}\n\n")
+                        counter += 1
 
     def _render_video(self):
         sub_path = self.config['srt_path'].replace("\\", "/").replace(":", "\\:")
@@ -270,7 +306,7 @@ class TranscriptionWorker(QThread):
             err = process.stderr.read()
             raise Exception(f"Erro FFmpeg: {err}")
 
-    def _fmt_time(self, seconds):
+    def _fmt_time_simple(self, seconds):
         seconds = max(0, seconds)
         total_seconds = int(seconds)
         milliseconds = int((seconds - total_seconds) * 1000)
@@ -353,7 +389,6 @@ class ModernSubtitleApp(QMainWindow):
         main_layout.setSpacing(20)
         main_layout.setContentsMargins(30, 30, 30, 30)
 
-        # Header
         header = QVBoxLayout()
         title = QLabel("AI Caption Generator")
         title.setObjectName("Title")
@@ -361,7 +396,6 @@ class ModernSubtitleApp(QMainWindow):
         header.addWidget(title)
         main_layout.addLayout(header)
 
-        # Arquivo
         self.file_card = QFrame()
         self.file_card.setObjectName("Card")
         card_layout = QVBoxLayout(self.file_card)
@@ -379,7 +413,6 @@ class ModernSubtitleApp(QMainWindow):
         card_layout.addWidget(self.file_label)
         main_layout.addWidget(self.file_card)
 
-        # Configurações
         settings_card = QFrame()
         settings_card.setObjectName("Card")
         sett_layout = QVBoxLayout(settings_card)
@@ -387,7 +420,6 @@ class ModernSubtitleApp(QMainWindow):
 
         grid = QHBoxLayout()
         
-        # Col Esquerda
         col1 = QVBoxLayout()
         col1.addWidget(QLabel("Modelo AI:"))
         self.model_combo = QComboBox()
@@ -395,27 +427,26 @@ class ModernSubtitleApp(QMainWindow):
         self.model_combo.setCurrentText("small")
         col1.addWidget(self.model_combo)
         
-        col1.addWidget(QLabel("Modo:"))
+        col1.addWidget(QLabel("Modo de Saída:"))
         self.mode_combo = QComboBox()
         self.mode_combo.addItems(["Apenas SRT", "SRT + Vídeo"])
         col1.addWidget(self.mode_combo)
         
-        # Col Direita
         col2 = QVBoxLayout()
-        col2.addWidget(QLabel("Estilo:"))
+        col2.addWidget(QLabel("Estilo da Legenda:"))
         self.style_combo = QComboBox()
-        self.style_combo.addItems(["Frases Completas", "Palavra por Palavra"])
-        self.style_combo.currentIndexChanged.connect(self.toggle_word_spin)
+        self.style_combo.addItems(["Frases Inteligentes", "Palavra por Palavra"])
+        self.style_combo.currentIndexChanged.connect(self.toggle_char_spin)
         col2.addWidget(self.style_combo)
         
-        self.limit_label = QLabel("Max. Palavras:")
+        self.limit_label = QLabel("Máx. Caracteres:")
         col2.addWidget(self.limit_label)
         
-        self.word_spin = QSpinBox()
-        self.word_spin.setRange(1, 50)
-        self.word_spin.setValue(10)
-        self.word_spin.setCursor(Qt.CursorShape.PointingHandCursor)
-        col2.addWidget(self.word_spin)
+        self.char_spin = QSpinBox()
+        self.char_spin.setRange(10, 200)
+        self.char_spin.setValue(45)
+        self.char_spin.setCursor(Qt.CursorShape.PointingHandCursor)
+        col2.addWidget(self.char_spin)
 
         grid.addLayout(col1)
         grid.addSpacing(20)
@@ -423,7 +454,6 @@ class ModernSubtitleApp(QMainWindow):
         sett_layout.addLayout(grid)
         main_layout.addWidget(settings_card)
 
-        # Status
         status_layout = QVBoxLayout()
         self.status_label = QLabel("Aguardando...")
         self.status_label.setAlignment(Qt.AlignmentFlag.AlignCenter)
@@ -444,13 +474,12 @@ class ModernSubtitleApp(QMainWindow):
         main_layout.addStretch()
         main_layout.addLayout(status_layout)
 
-        # Inicializa estado do spinbox
-        self.toggle_word_spin()
+        self.toggle_char_spin()
 
-    def toggle_word_spin(self):
-        is_phrase_mode = self.style_combo.currentText() == "Frases Completas"
-        self.word_spin.setEnabled(is_phrase_mode)
-        if is_phrase_mode:
+    def toggle_char_spin(self):
+        is_smart_mode = self.style_combo.currentText() == "Frases Inteligentes"
+        self.char_spin.setEnabled(is_smart_mode)
+        if is_smart_mode:
             self.limit_label.setStyleSheet("color: #E0E0E0;")
         else:
             self.limit_label.setStyleSheet("color: #555555;")
@@ -488,7 +517,7 @@ class ModernSubtitleApp(QMainWindow):
             'video_path': self.video_path,
             'model': self.model_combo.currentText(),
             'subtitle_type': self.style_combo.currentText(),
-            'max_words': self.word_spin.value(),
+            'max_chars': self.char_spin.value(),
             'generate_video': self.mode_combo.currentText() == "SRT + Vídeo"
         }
 
